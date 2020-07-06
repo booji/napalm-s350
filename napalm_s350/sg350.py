@@ -15,6 +15,7 @@
 
 """
 Napalm driver for Cisco SG350 devices.
+Based of S350 with minor changes due to slightly different output formatting.
 
 Read https://napalm.readthedocs.io for more information.
 """
@@ -86,7 +87,7 @@ class SG350Driver(NetworkDriver):
     def open(self):
         """Open a connection to the device."""
         self.device = ConnectHandler(
-            device_type="cisco_s300",
+            device_type="cisco_sg350",
             host=self.hostname,
             username=self.username,
             password=self.password,
@@ -146,19 +147,19 @@ class SG350Driver(NetworkDriver):
         """
         arp_table = []
 
-        output = self._send_command(
-            "show arp | include (static|dynamic) | exclude Incomplete"
-        )
+        output = self._send_command("show arp | include (static|dynamic)")
 
         for line in output.splitlines():
 
-            if line.startswith("vlan") and line.split()[1].isdigit():
+            if line.startswith("vlan"):
                 if len(line.split()) == 6:
+                    # vlan, vlan id, interface, ip, mac, staus
                     _, _, interface, ip, mac, _ = line.split()
+                elif len(len.split() == 5):
+                    _, _, ip, mac, _ = line.split()
+                    interface = ""
                 else:
                     raise ValueError(f"Unexpected output: {line.split()}")
-            else:
-                raise ValueError(f"Unexpected output: {line.split()}")
 
             entry = {
                 "interface": interface,
@@ -192,6 +193,37 @@ class SG350Driver(NetworkDriver):
             configs["running"] = output
 
         return configs
+
+    def get_enviroment(self):
+        """
+        Return a dictionary of enviroment factsself.
+
+        cpu is using 1-minute average
+        cpu hard coded to cpu0 (i.e. only a single CPU)
+        fans status
+        """
+        enviroment.setdefault("cpu", {})
+        enviroment["cpu"][0] = {}
+        enviroment["cpu"][0]["%usage"] = 0.0
+        show_fans = self._send_command("show system fans")
+        show_enviroment = self._send_command("show enviroment")
+        show_cpu_util = self._send_command("show cpu utilization")
+
+        for line in show_cpu_util.splitlines():
+            if line.startswith("five seconds:"):
+                cpu_regex = r"one minute: (\d+)%"
+                match = re.search(cpu_regex, line)
+                enviroment["cpu"][0]["%usage"] = float(match.group(1))
+                break
+        enviromemnt["fans"] = {}
+        fan_regex = r"(\d+/\d+)\s+\d+\s+(\S+)"
+        for match in re.finditer(fan):
+            if match.group(2) == "OK":
+                eviroment["fans"][match.group(1)]["status"] = True
+            else:
+                enviroment["fans"][match.group(1)]["status"] = False
+
+        return enviroment
 
     def get_facts(self):
         """Return a set of facts from the device."""
@@ -313,10 +345,6 @@ class SG350Driver(NetworkDriver):
             interfaces[interface] = entry
 
         return interfaces
-
-    # 10.10.0.10/24      vlan 1000 UP/UP      Static  disable   No   enable   Valid
-    # 10.10.20.1/24      vlan 1020 UP/UP      Static  disable   No   enable   Valid
-    # 10.10.50.10/24     vlan 1050 UP/UP      Static  disable   No   enable   Valid
 
     def get_interfaces_ip(self):
         """Returns all configured interface IP addresses."""
@@ -444,46 +472,45 @@ class SG350Driver(NetworkDriver):
         return ntp_servers
 
     def get_vlans(self):
-        """get_vlans implementation for SG300"""
-        output = self._send_command("show vlans")
+        """get_vlans implementation for SG350"""
+        output = self._send_command("show vlan")
         vlans = {}
-        interfaces = []
-        name = ""
-        vlan = ""
+        vlan = None
         re_min_max = r"(\d+)-(\d+)"
         # Output has fixed width columns with cells wrapping
         # vlan num, vlan name, Tagged Ports, UnTagged Ports, created by
         # skip header
-        for row in output.splitlines()[3:]:
+        for row in output.splitlines()[4:]:
             t_ports = row[22:41].strip()
             u_ports = row[41:60].strip()
             status = row[60:].strip()
+            # Indicates a wrapped cell
             if row[:5].strip() == "":
-                name = name + " " + row[5:22].strip()
+                vlans[vlan]["name"] = " ".join((vlans[vlan]["name"], row[5:22].strip()))
+                vlans[vlan]["name"] = vlans[vlan]["name"].strip()
             else:
-                if vlan != None:
-                    vlans[vlan] = {"name": name.strip(), "interfaces": interfaces}
                 vlan = int(row[:5])
                 name = row[5:22].strip()
-                interfaces = []
+                vlans[vlan] = {"name": name, "interfaces": []}
             for item in t_ports.split(","):
                 if item != "":
                     if "-" in item:
                         result = re.search(re_min_max, item)
                         item = item.replace(result.group(0), "")
                         for x in range(int(result.group(1)), int(result.group(2)) + 1):
-                            interfaces.append(item + str(x))
+                            vlans[vlan]["interfaces"].append(f"{item}{x}")
                     else:
-                        interfaces.append(item)
+                        vlans[vlan]["interfaces"].append(item)
             for item in u_ports.split(","):
                 if item != "":
                     if "-" in item:
                         result = re.search(re_min_max, item)
                         item = item.replace(result.group(0), "")
                         for x in range(int(result.group(1)), int(result.group(2)) + 1):
-                            interfaces.append(item + str(x))
+                            vlans[vlan]["interfaces"].append(f"{item}{x}")
                     else:
-                        interfaces.append(item)
+                        vlans[vlan]["interfaces"].append(item)
+
         return vlans
 
     def is_alive(self):
