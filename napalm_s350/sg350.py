@@ -14,8 +14,10 @@
 # the License.
 
 """
-Napalm driver for Cisco SG350 devices.
+Napalm driver for Cisco SG350X series.
+CLI output based on hybrid-tesla-2.5.0.90+
 Based of S350 with minor changes due to slightly different output formatting.
+
 
 Read https://napalm.readthedocs.io for more information.
 """
@@ -40,8 +42,8 @@ from napalm.base.exceptions import (
 import napalm.base.helpers
 
 
-class SG350Driver(NetworkDriver):
-    """Napalm driver for SG350."""
+class SG350XDriver(NetworkDriver):
+    """Napalm driver for SG350X."""
 
     def __init__(self, hostname, username, password, timeout=60, optional_args=None):
         """Constructor."""
@@ -87,7 +89,7 @@ class SG350Driver(NetworkDriver):
     def open(self):
         """Open a connection to the device."""
         self.device = ConnectHandler(
-            device_type="cisco_sg350",
+            device_type="cisco_SG350X",
             host=self.hostname,
             username=self.username,
             password=self.password,
@@ -174,7 +176,7 @@ class SG350Driver(NetworkDriver):
 
     def get_config(self, retrieve="all"):
         """
-        get_config for SG350. Since this firmware doesn't support a candidate
+        get_config for SG350X. Since this firmware doesn't support a candidate
         configuration we leave it empty.
         """
 
@@ -201,13 +203,16 @@ class SG350Driver(NetworkDriver):
         cpu is using 1-minute average
         cpu hard coded to cpu0 (i.e. only a single CPU)
         fans status
+        memory - Not easily obtained expensive to run show tech-support memory
+                 values are set to
         """
         enviroment.setdefault("cpu", {})
         enviroment["cpu"][0] = {}
         enviroment["cpu"][0]["%usage"] = 0.0
         show_fans = self._send_command("show system fans")
-        show_enviroment = self._send_command("show enviroment")
         show_cpu_util = self._send_command("show cpu utilization")
+        show_power_inline = self._send_command("show power inline | include %")
+        show_system_sensors = self._send_command("show system sensors")
 
         for line in show_cpu_util.splitlines():
             if line.startswith("five seconds:"):
@@ -215,13 +220,39 @@ class SG350Driver(NetworkDriver):
                 match = re.search(cpu_regex, line)
                 enviroment["cpu"][0]["%usage"] = float(match.group(1))
                 break
-        enviromemnt["fans"] = {}
+        enviroment["fans"] = {}
         fan_regex = r"(\d+/\d+)\s+\d+\s+(\S+)"
         for match in re.finditer(fan):
             if match.group(2) == "OK":
                 eviroment["fans"][match.group(1)]["status"] = True
             else:
                 enviroment["fans"][match.group(1)]["status"] = False
+
+        for line in show_power_inline.splitlines():
+            if line.startwith("Usage threshold:"):
+                threshold = float(line.split(":")[-1].strip("%"))
+
+        show_power_inline_data = napalm.base.helpers.textfsm_extractor(
+            self, "powerinline", show_power_inline
+        )
+        enviroment.setdefault("power", {})
+        for item in show_power_inline_data:
+            enviroment["power"][int(item["requiredid"])] = {
+                "status": item["consumedpowerpercent"] < item["threshold"],
+                "capacity": item["nominalpower"],
+                "output": item["consumedpower"],
+            }
+
+        show_system_sensors_data = napalm.base.helpers.textfsm_extractor(
+            self, "sensor", show_system_sensors
+        )
+        enviroment.setdefault("temperature", {})
+        for item in show_system_sensors_data:
+            enviroment["temperature"][item["sensor"]] = {
+                "temperature": item["temperature"],
+                "is_alert": item["temperature"] > item["warntemperature"],
+                "is_critical": item["temperature"] > item["crittemperature"],
+            }
 
         return enviroment
 
@@ -361,7 +392,7 @@ class SG350Driver(NetworkDriver):
 
             ip = netaddr.IPNetwork(network)
 
-            family = "ipv{0}".format(ip.version)
+            family = f"ipv{ip.version}"
 
             interfaces[name] = {family: {str(ip.ip): {"prefix_length": ip.prefixlen}}}
 
@@ -472,7 +503,7 @@ class SG350Driver(NetworkDriver):
         return ntp_servers
 
     def get_vlans(self):
-        """get_vlans implementation for SG350"""
+        """get_vlans implementation for SG350X"""
         output = self._send_command("show vlan")
         vlans = {}
         vlan = None
